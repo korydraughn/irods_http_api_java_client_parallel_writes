@@ -29,45 +29,44 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 public class IRODSHTTPParallelWriteTest {
 
-    static final String baseURL = "http://<host>:<port>/irods-http-api/0.9.5";
-	
-	static HttpClient httpClient = null;
-	static String bearerHeader = null;
-	static final ObjectMapper mapper = new ObjectMapper();
+    private static final String baseURL = "http://localhost:9000/irods-http-api/0.5.0";
+    private static final String username = "<username>";
+    private static final String password = "<password>";
+    private static final String localFilePath = "/path/to/local/file";
 
-	public static void main(String[] args) throws IOException, InterruptedException {
-		final var start = Instant.now();
+    static HttpClient httpClient = null;
+    static String bearerHeader = null;
+    static final ObjectMapper mapper = new ObjectMapper();
 
-		final var streamCount = 4;
-//		final var httpClientThreadPool = Executors.newFixedThreadPool(streamCount);
-		final var threadPool = Executors.newFixedThreadPool(streamCount);
+    public static void main(String[] args) throws IOException, InterruptedException {
+        final var start = Instant.now();
 
-		httpClient = HttpClient.newBuilder()
-//			.executor(httpClientThreadPool)
-			.build();
-		
-		final var bearerToken = authenticate("kory", "<password>");
-		System.out.println("bearerToken = " + bearerToken);
-		bearerHeader = "Bearer " + bearerToken;
+        final var streamCount = 4;
+        final var threadPool = Executors.newFixedThreadPool(streamCount);
 
-		final var logicalPath = "/tempZone/home/kory/100mb.bin.http";
-		final var parallelWriteHandle = parallelWriteInit(bearerToken, streamCount, logicalPath);
-		System.out.println("parallelWriteHandle = " + parallelWriteHandle);
-		
-		final var localFilePath = "/home/kory/100mb.bin";
-		final var fileSize = Files.size(Paths.get(localFilePath));
-		final var chunkSize = fileSize / streamCount;
-		final var chunkSizeRemainder = fileSize % streamCount;
-		System.out.println(String.format("chunk size = %d, chunk size remainder = %d", chunkSize, chunkSizeRemainder));
-		
-		final var futures = new ArrayList<Future<?>>();
+        httpClient = HttpClient.newBuilder().build();
 
-		for (int i = 0; i < streamCount; ++i) {
+        final var bearerToken = authenticate(username, password);
+        System.out.println("bearerToken = " + bearerToken);
+        bearerHeader = "Bearer " + bearerToken;
+
+        final var logicalPath = String.format("/tempZone/home/%s/100mb.bin.http", username);
+        final var parallelWriteHandle = parallelWriteInit(bearerToken, streamCount, logicalPath);
+        System.out.println("parallelWriteHandle = " + parallelWriteHandle);
+
+        final var fileSize = Files.size(Paths.get(localFilePath));
+        final var chunkSize = fileSize / streamCount;
+        final var chunkSizeRemainder = fileSize % streamCount;
+        System.out.println(String.format("chunk size = %d, chunk size remainder = %d", chunkSize, chunkSizeRemainder));
+
+        final var futures = new ArrayList<Future<?>>();
+
+        // Launch worker tasks for uploading file.
+        for (int i = 0; i < streamCount; ++i) {
             final var input = new WriteInput();
 
             input.httpClient = HttpClient.newHttpClient();
             input.executor = threadPool;
-//            input.httpClientExecutor = httpClientThreadPool;
 
             input.bearerToken = bearerToken;
             input.localFilePath = localFilePath;
@@ -78,81 +77,82 @@ public class IRODSHTTPParallelWriteTest {
             input.chunkSize = chunkSize + (i == streamCount - 1 ? chunkSizeRemainder : 0);
 
             futures.add(writeChunk(input));
-		}
-		
-		// Wait for all parallel write threads to finish.
-		futures.forEach(f -> {
-			try {
-				f.get();
-			} catch (InterruptedException | ExecutionException e) {
-				e.printStackTrace();
-			}
-		});
+        }
 
-		parallelWriteShutdown(bearerToken, parallelWriteHandle);
+        // Wait for all parallel write threads to finish.
+        futures.forEach(f -> {
+            try {
+                f.get();
+            } catch (InterruptedException | ExecutionException e) {
+                e.printStackTrace();
+            }
+        });
 
-		final var duration = Duration.between(start, Instant.now());
-		System.out.println(String.format("time elapsed: %d s %d ms", duration.toSeconds(), duration.minusSeconds(duration.toSeconds()).toMillis()));
-		
-		threadPool.shutdown();
-	}
-	
-	static String authenticate(String username, String password) throws IOException, InterruptedException {
-		final var creds = Base64.encodeBase64URLSafeString(
-			String.format("%s:%s", username, password).getBytes());
-		
-		final var request = HttpRequest.newBuilder()
-			.version(Version.HTTP_1_1)
-			.uri(URI.create(baseURL + "/authenticate"))
-			.POST(HttpRequest.BodyPublishers.noBody())
-			.header("Authorization", "Basic " + creds)
-			.build();
+        parallelWriteShutdown(bearerToken, parallelWriteHandle);
 
-		return httpClient.send(request, BodyHandlers.ofString()).body();
-	}
-	
+        final var duration = Duration.between(start, Instant.now());
+        System.out.println(String.format("time elapsed: %d s %d ms", duration.toSeconds(), duration.minusSeconds(duration.toSeconds()).toMillis()));
+
+        threadPool.shutdown();
+    }
+
+    static String authenticate(String username, String password) throws IOException, InterruptedException {
+        final var creds = Base64.encodeBase64URLSafeString(
+                String.format("%s:%s", username, password).getBytes());
+
+        final var request = HttpRequest.newBuilder()
+            .version(Version.HTTP_1_1)
+            .uri(URI.create(baseURL + "/authenticate"))
+            .POST(HttpRequest.BodyPublishers.noBody())
+            .header("Authorization", "Basic " + creds)
+            .build();
+
+        return httpClient.send(request, BodyHandlers.ofString()).body();
+    }
+
     static class IRODSResponse
     {
-        @JsonProperty("error_code") int errorCode;
+        @JsonProperty("status_code") int errorCode;
     }
-    
+
     static class Response
     {
         @JsonProperty("irods_response") IRODSResponse iRODSResponse;
         @JsonProperty("parallel_write_handle") String parallelWriteHandle;
     }
 
-	static String parallelWriteInit(String bearerToken, int streamCount, String path) throws IOException, InterruptedException {
-		final var body = String.format(
-			"op=parallel_write_init&lpath=%s&stream-count=%d", path, streamCount);
+    static String parallelWriteInit(String bearerToken, int streamCount, String path) throws IOException, InterruptedException {
+        final var body = String.format(
+                "op=parallel_write_init&lpath=%s&stream-count=%d", path, streamCount);
 
-		final var request = HttpRequest.newBuilder()
-			.version(Version.HTTP_1_1)
-			.uri(URI.create(baseURL + "/data-objects"))
-			.POST(BodyPublishers.ofString(body))
-			.header("Authorization", bearerHeader)
-			.build();
+        final var request = HttpRequest.newBuilder()
+            .version(Version.HTTP_1_1)
+            .uri(URI.create(baseURL + "/data-objects"))
+            .POST(BodyPublishers.ofString(body))
+            .header("Authorization", bearerHeader)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .build();
 
-		final var response = httpClient.send(request, BodyHandlers.ofString());
-		return mapper.readValue(response.body(), Response.class).parallelWriteHandle;
-	}
-	
-	static class WriteInput
-	{
-		HttpClient httpClient;
-		String bearerToken;
-		String localFilePath;
-		String parallelWriteHandle;
-		int streamIndex;
-		long offset;
-		long chunkSize;
-		ExecutorService executor;
-		ExecutorService httpClientExecutor;
-	}
-	
-	static Future<?> writeChunk(WriteInput input) {
-		return input.executor.submit(() -> {
-            final var bufferSize = 4 * 1024 *1024;
+        final var response = httpClient.send(request, BodyHandlers.ofString());
+        return mapper.readValue(response.body(), Response.class).parallelWriteHandle;
+    }
+
+    static class WriteInput
+    {
+        HttpClient httpClient;
+        String bearerToken;
+        String localFilePath;
+        String parallelWriteHandle;
+        int streamIndex;
+        long offset;
+        long chunkSize;
+        ExecutorService executor;
+        ExecutorService httpClientExecutor;
+    }
+
+    static Future<?> writeChunk(WriteInput input) {
+        return input.executor.submit(() -> {
+            final var bufferSize = 4 * 1024 * 1024;
             final var bbuf = new byte[bufferSize];
 
             try (final var in = new FileInputStream(input.localFilePath)) {
@@ -167,13 +167,13 @@ public class IRODSHTTPParallelWriteTest {
                 do {
                     bytesRead = in.read(bbuf);
                     System.out.println("bytesRead = " + bytesRead);
-                    
+
                     if (bytesRead <= 0) {
                         break;
                     }
-                    
+
                     final var byteCount = Math.min(remainingBytes, bytesRead);
-                    
+
                     mpb.clear();
 
                     if (setOffset) {
@@ -217,117 +217,118 @@ public class IRODSHTTPParallelWriteTest {
             } catch (IOException e1) {
                 e1.printStackTrace();
             }
-		});
-	}
-	
-	static void parallelWriteShutdown(String bearerToken, String parallelWriteHandle) throws IOException, InterruptedException {
-		final var body = String.format(
-			"op=parallel_write_shutdown&parallel-write-handle=%s", parallelWriteHandle);
+        });
+    }
 
-		final var request = HttpRequest.newBuilder()
-			.version(Version.HTTP_1_1)
-			.uri(URI.create(baseURL + "/data-objects"))
-			.POST(BodyPublishers.ofString(body))
-			.header("Authorization", bearerHeader)
-			.build();
+    static void parallelWriteShutdown(String bearerToken, String parallelWriteHandle) throws IOException, InterruptedException {
+        final var body = String.format(
+                "op=parallel_write_shutdown&parallel-write-handle=%s", parallelWriteHandle);
 
-		httpClient.send(request, BodyHandlers.ofString());
-	}
-	
-	static class MultipartBuilder
-	{
-		private String boundary_;
-		private StringBuilder sb_;
-		private List<byte[]> byteArrays_;
+        final var request = HttpRequest.newBuilder()
+            .version(Version.HTTP_1_1)
+            .uri(URI.create(baseURL + "/data-objects"))
+            .POST(BodyPublishers.ofString(body))
+            .header("Authorization", bearerHeader)
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .build();
 
-		MultipartBuilder(String boundary)
-		{
-			boundary_ = boundary;
-			sb_ = new StringBuilder();
-			byteArrays_ = new ArrayList<>();
-		}
+        httpClient.send(request, BodyHandlers.ofString());
+    }
 
-		void addPart(String paramName, String value)
-		{
-			sb_.setLength(0);
+    static class MultipartBuilder
+    {
+        private String boundary_;
+        private StringBuilder sb_;
+        private List<byte[]> byteArrays_;
 
-			sb_.append("--");
-			sb_.append(boundary_);
-			sb_.append("\r\n");
+        MultipartBuilder(String boundary)
+        {
+            boundary_ = boundary;
+            sb_ = new StringBuilder();
+            byteArrays_ = new ArrayList<>();
+        }
 
-			sb_.append("Content-Disposition: form-data; name=");
-			sb_.append(paramName);
-			sb_.append("\r\n");
-			sb_.append("Content-Type: application/octet-stream");
-			sb_.append("\r\n");
-			sb_.append("Content-Transfer-Encoding: binary");
-			sb_.append("\r\n");
-			sb_.append("\r\n");
-			
-			sb_.append(value);
-			sb_.append("\r\n");
-			
-			byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
-		}
-		
-		void addPart(String paramName, byte[] bytes, int count)
-		{
-			sb_.setLength(0);
+        void addPart(String paramName, String value)
+        {
+            sb_.setLength(0);
 
-			sb_.append("--");
-			sb_.append(boundary_);
-			sb_.append("\r\n");
+            sb_.append("--");
+            sb_.append(boundary_);
+            sb_.append("\r\n");
 
-			sb_.append("Content-Disposition: form-data; name=");
-			sb_.append(paramName);
-			sb_.append("\r\n");
-			sb_.append("Content-Type: application/octet-stream");
-			sb_.append("\r\n");
-			sb_.append("Content-Transfer-Encoding: binary");
-			sb_.append("\r\n");
-			sb_.append("Content-Length: ");
-			sb_.append(count);
-			sb_.append("\r\n");
-			sb_.append("\r\n");
-			
-			byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
-			byteArrays_.add(Arrays.copyOfRange(bytes, 0, count));
-			byteArrays_.add("\r\n".getBytes(StandardCharsets.UTF_8));
-		}
-		
-		void addBoundaryEndMarker()
-		{
-			sb_.setLength(0);
+            sb_.append("Content-Disposition: form-data; name=");
+            sb_.append(paramName);
+            sb_.append("\r\n");
+            sb_.append("Content-Type: application/octet-stream");
+            sb_.append("\r\n");
+            sb_.append("Content-Transfer-Encoding: binary");
+            sb_.append("\r\n");
+            sb_.append("\r\n");
 
-			sb_.append("--");
-			sb_.append(boundary_);
-			sb_.append("--");
-			sb_.append("\r\n");
+            sb_.append(value);
+            sb_.append("\r\n");
 
-			byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
-		}
-		
-		List<byte[]> build()
-		{
-			return Collections.unmodifiableList(byteArrays_);
-		}
-		
-		long size()
-		{
-			long count = 0;
-			
-			for (var array : byteArrays_) {
-				count += array.length;
-			}
-			
-			return count;
-		}
-		
-		void clear()
-		{
-			sb_.setLength(0);
-			byteArrays_.clear();
-		}
-	}
+            byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        void addPart(String paramName, byte[] bytes, int count)
+        {
+            sb_.setLength(0);
+
+            sb_.append("--");
+            sb_.append(boundary_);
+            sb_.append("\r\n");
+
+            sb_.append("Content-Disposition: form-data; name=");
+            sb_.append(paramName);
+            sb_.append("\r\n");
+            sb_.append("Content-Type: application/octet-stream");
+            sb_.append("\r\n");
+            sb_.append("Content-Transfer-Encoding: binary");
+            sb_.append("\r\n");
+            sb_.append("Content-Length: ");
+            sb_.append(count);
+            sb_.append("\r\n");
+            sb_.append("\r\n");
+
+            byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
+            byteArrays_.add(Arrays.copyOfRange(bytes, 0, count));
+            byteArrays_.add("\r\n".getBytes(StandardCharsets.UTF_8));
+        }
+
+        void addBoundaryEndMarker()
+        {
+            sb_.setLength(0);
+
+            sb_.append("--");
+            sb_.append(boundary_);
+            sb_.append("--");
+            sb_.append("\r\n");
+
+            byteArrays_.add(sb_.toString().getBytes(StandardCharsets.UTF_8));
+        }
+
+        List<byte[]> build()
+        {
+            return Collections.unmodifiableList(byteArrays_);
+        }
+
+        long size()
+        {
+            long count = 0;
+
+            for (var array : byteArrays_) {
+                count += array.length;
+            }
+
+            return count;
+        }
+
+        void clear()
+        {
+            sb_.setLength(0);
+            byteArrays_.clear();
+        }
+    }
 
 }
